@@ -1,0 +1,58 @@
+#cloud-config
+
+# Update apt database and upgrade the system on first boot
+package_update: true
+package_upgrade: true
+
+# Install necessary packages for Docker setup
+packages:
+  - ca-certificates
+  - curl
+
+# Run commands to install Docker
+runcmd:
+  # Prepare keyring directory for Docker's GPG key
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+
+  # Add Docker's repository
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  # Update apt and install Docker CE, Docker CLI, and plugins
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # Start and enable Docker service
+  - systemctl start docker
+  - systemctl enable docker
+
+  # Install Portainer
+  - docker volume create portainer_data
+  - docker run -d -p 9000:9000 --name portainer --restart always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ce
+
+# Commands to setup RustDesk, including secure key management and container deployment
+  - mkdir -p /root/secrets /root/db
+  - docker run --rm --entrypoint /usr/bin/rustdesk-utils rustdesk/rustdesk-server-s6:latest genkeypair > /root/secrets/id_ed25519
+  - cat /root/secrets/id_ed25519 | docker secret create key_priv -
+  - cat /root/secrets/id_ed25519.pub | docker secret create key_pub -
+  - docker service create --name rustdesk-server --secret key_priv --secret key_pub --net=host -e "RELAY=rustdeskrelay.spoon.rip" -e "ENCRYPTED_ONLY=1" -e "DB_URL=/db/db_v2.sqlite3" --mount "type=bind,source=/root/db,destination=/db" rustdesk/rustdesk-server-s6:2.0.0-arm64v8
+
+# Ensure that Docker starts at every system boot
+write_files:
+  - path: /etc/systemd/system/docker.service
+    content: |
+      [Unit]
+      Description=Docker Application Container Engine
+      Documentation=https://docs.docker.com
+      After=network.target
+
+      [Service]
+      ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+      ExecReload=/bin/kill -s HUP $MAINPID
+      TimeoutSec=0
+      RestartSec=2
+      Restart=always
+
+      [Install]
+      WantedBy=multi-user.target
